@@ -5,3 +5,6 @@ pandas
 python-dateutil
 pytz
 amadeus
+pymongo
+openpyxl
+aiohttp
