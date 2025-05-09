@@ -15,6 +15,8 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 AMADEUS_CLIENT_ID = os.getenv("AMADEUS_CLIENT_ID")
 AMADEUS_CLIENT_SECRET = os.getenv("AMADEUS_CLIENT_SECRET")
 DEEPL_API_KEY = os.getenv("DEEPL_API_KEY") #번역(DeepL)api
+API_KEY = os.getenv("GOOGLE_PLACES_API_KEY")
+
 
 
 # airports_with_timezone.csv파일에서 해당 이타코드의 공항명(영문)을 가져오는 함수
@@ -34,6 +36,7 @@ def load_airport_ennames():
     return dict(zip(df["IATA Code"], df["Name"]))
 
 iata_to_name = load_airport_ennames()
+
 
 # load_airport_ennames에서 반환된 공항명(영문) -> 공항명(한글)로 변경하는 함수
 def get_airport_koname(iata_code):
@@ -98,7 +101,6 @@ def location_to_iata(location_name: str, destination_country: str = None) -> str
         print(f"❌ ChatGPT를 통해 IATA 코드를 찾는 중 오류 발생: {e}")
         return None
 
-# Amadeus API 인증 토큰(access token)을 발급받는 함수
 def get_amadeus_token():
     url = "https://test.api.amadeus.com/v1/security/oauth2/token"
     payload = {
@@ -112,6 +114,7 @@ def get_amadeus_token():
     else:
         print("❌ Amadeus 토큰 요청 실패:", response.text)
         return None
+
 
 # Amadeus 항공편 검색 함수
 def get_flight_info(departure_iata, arrival_iata, departure_date):
@@ -162,8 +165,6 @@ def load_timezone_mapping():
 
 
 # ✅ 출발지/도착지 IATA 기준 시차 계산 함수 추가
-from datetime import datetime
-
 def calculate_time_difference_by_iata(dep_iata: str, arr_iata: str, timezone_mapping: dict) -> int:
     try:
         tz_name_dep = timezone_mapping.get(dep_iata)
@@ -175,9 +176,9 @@ def calculate_time_difference_by_iata(dep_iata: str, arr_iata: str, timezone_map
         tz_dep = pytz.timezone(tz_name_dep)
         tz_arr = pytz.timezone(tz_name_arr)
 
-        now_naive = datetime.utcnow()
-        now_dep = tz_dep.localize(now_naive)
-        now_arr = tz_arr.localize(now_naive)
+        now_utc = datetime.now(timezone.utc)  # ✅ 타임존 포함된 현재 시간
+        now_dep = now_utc.astimezone(tz_dep)
+        now_arr = now_utc.astimezone(tz_arr)
 
         offset_dep = now_dep.utcoffset().total_seconds() / 3600
         offset_arr = now_arr.utcoffset().total_seconds() / 3600
@@ -190,90 +191,89 @@ def calculate_time_difference_by_iata(dep_iata: str, arr_iata: str, timezone_map
 
 
 
-# 위도, 경도를 기준으로 Amadeus API를 통해 호텔 가격 정보를 조회하는 함수
-def get_hotels_with_price(lat, lon, checkin, checkout, adults=1):
-    from amadeus import Client, ResponseError
+#
+def get_hotels_with_places_api(lat, lon, max_results=3, radius=2000):
+    url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
+    params = {
+        "location": f"{lat},{lon}",
+        "radius": radius,
+        "type": "lodging",
+        "key": API_KEY
+    }
 
-    amadeus = Client(
-        client_id=os.getenv("AMADEUS_CLIENT_ID"),
-        client_secret=os.getenv("AMADEUS_CLIENT_SECRET")
-    )
+    response = requests.get(url, params=params)
+    data = response.json()
 
-    try:
-        geo_response = amadeus.reference_data.locations.hotels.by_geocode.get(
-            latitude=lat,
-            longitude=lon,
-            radius=20,
-            radiusUnit='KM'
-        )
+    hotels = []
+    for h in data.get("results", [])[:max_results]:
+        name = h.get("name")
+        rating = h.get("rating", "N/A")
+        address = h.get("vicinity", "주소 없음")
 
-        hotel_ids = [h['hotelId'] for h in geo_response.data]
+        # 사진
+        photo_url = None
+        if "photos" in h:
+            photo_ref = h["photos"][0]["photo_reference"]
+            photo_url = (
+                f"https://maps.googleapis.com/maps/api/place/photo"
+                f"?maxwidth=400&photoreference={photo_ref}&key={API_KEY}"
+            )
 
-        results = []
-        for hid in hotel_ids:
-            try:
-                offer = amadeus.shopping.hotel_offers_search.get(
-                    hotelIds=hid,
-                    checkInDate=checkin,
-                    checkOutDate=checkout,
-                    adults=adults
-                )
+        hotels.append({
+            "name": name,
+            "rating": rating,
+            "address": address,
+            "photo_url": photo_url
+        })
 
-                hotel_data = offer.data[0]
-                name = hotel_data['hotel']['name']
-                price = hotel_data['offers'][0]['price']['total']
-                results.append((name, price))
+    return hotels
 
-                if len(results) >= 3:
-                    break
-            except ResponseError:
-                continue
 
-        return results
 
-    except ResponseError as e:
-        print("❌ Amadeus API Error:", e)
+def get_hotel_offers(lat, lon, max_results=3, radius=2000):
+    import os
+    import requests
+
+    API_KEY = os.getenv("GOOGLE_PLACES_API_KEY")
+    url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
+    params = {
+        "location": f"{lat},{lon}",
+        "radius": radius,
+        "type": "lodging",
+        "key": API_KEY
+    }
+
+    response = requests.get(url, params=params)
+    if response.status_code != 200:
+        print("❌ Google Places API 요청 실패:", response.text)
         return []
 
+    data = response.json().get("results", [])
+    hotels = []
 
+    for h in data[:max_results]:
+        name = h.get("name", "이름 없음")
+        rating = h.get("rating", "평점 없음")
+        address = h.get("vicinity", "주소 없음")
 
-def get_hotel_offers(hotel_ids, checkin_date, checkout_date, token):
-    url = "https://test.api.amadeus.com/v3/shopping/hotel-offers"
-    headers = {"Authorization": f"Bearer {token}"}
-    valid_hotels = []
+        # 사진 URL 구성
+        photo_url = None
+        if "photos" in h:
+            photo_ref = h["photos"][0]["photo_reference"]
+            photo_url = (
+                f"https://maps.googleapis.com/maps/api/place/photo"
+                f"?maxwidth=400&photoreference={photo_ref}&key={API_KEY}"
+            )
 
-    def fetch_offer(hid):
-        params = {
-            "hotelIds": hid,
-            "checkInDate": checkin_date,
-            "checkOutDate": checkout_date,
-            "adults": 1,
-            "roomQuantity": 1,
-            "currency": "KRW"
-        }
-        try:
-            res = requests.get(url, headers=headers, params=params, timeout=5)
-            if res.status_code == 200:
-                data = res.json().get("data", [])
-                if data:
-                    hotel = data[0]
-                    name = hotel.get("hotel", {}).get("name", "이름 없음")
-                    price = hotel["offers"][0]["price"].get("total", "가격 정보 없음")
-                    return (name, f"{price} KRW")
-        except:
-            return None
+        hotels.append({
+            "name": name,
+            "rating": rating,
+            "address": address,
+            "photo_url": photo_url
+        })
 
-    # 병렬 요청 처리 (최대 5개 동시에, 10개까지 시도)
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        futures = [executor.submit(fetch_offer, hid) for hid in hotel_ids[:20]]
-        for future in as_completed(futures):
-            result = future.result()
-            if result:
-                valid_hotels.append(result)
-            if len(valid_hotels) >= 3:
-                break
-
-    return valid_hotels
+    return hotels
+#################################
 
 # iata코드를 통해 airports.xlsx에서 위도, 경도를 가져옴
 def get_lat_lon_from_iata(iata_code):
@@ -327,8 +327,8 @@ def map_weather_code(code):
     return code_map.get(code, "🌈 알 수 없는 날씨")
 
 
-# 날씨 API - Open-Meteo          문제없음
-def get_weather_forecast(city_name, country_name):
+# 날씨 API - Open-Meteo
+def get_weather_forecast(city_name, country_name, start_date, days):
     try:
         location = f"{city_name}, {country_name}"
         location_data = requests.get(
@@ -343,25 +343,52 @@ def get_weather_forecast(city_name, country_name):
         lat = location_data[0]["lat"]
         lon = location_data[0]["lon"]
 
+        end_date = start_date + timedelta(days=days - 1)
+
         weather = requests.get(
             f"https://api.open-meteo.com/v1/forecast",
             params={
                 "latitude": lat,
                 "longitude": lon,
                 "daily": "temperature_2m_max,temperature_2m_min,weathercode",
-                "timezone": "auto"
+                "timezone": "auto",
+                "start_date": start_date.isoformat(),
+                "end_date": end_date.isoformat()
             }
         ).json()
 
-        max_temp = weather['daily']['temperature_2m_max'][0]
-        min_temp = weather['daily']['temperature_2m_min'][0]
-        weather_code = weather['daily']['weathercode'][0]
-        weather_description = map_weather_code(weather_code)
+        results = []
+        for i in range(days):
+            date = weather['daily']['time'][i]
+            max_temp = weather['daily']['temperature_2m_max'][i]
+            min_temp = weather['daily']['temperature_2m_min'][i]
+            code = weather['daily']['weathercode'][i]
+            desc = map_weather_code(code)
+            results.append(f"📅 {date}: {desc} / 최고 {max_temp}°C / 최저 {min_temp}°C")
 
-        return f"{weather_description} / 최고 {max_temp}°C / 최저 {min_temp}°C"
+        return "\n".join(results)
+
     except Exception as e:
         print(f"❌ 날씨 오류: {e}")
         return None
+
+
+st.markdown(
+    """
+    <style>
+    .stApp {
+        background-image: url("https://unsplash.com/photos/M0AWNxnLaMw/download?ixid=M3wxMjA3fDB8MXxhbGx8fHx8fHx8fHwxNzQ2NzU4MjI4fA&force=true");
+        background-size: cover;
+        background-position: center;
+        background-attachment: fixed;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+
+
 
 # ✅ Streamlit UI 시작 전에 timezone_mapping 로드
 st.title("여행 추천 앱")
@@ -470,8 +497,12 @@ if st.button("✈️ 추천하기"):
 
                 st.subheader(f"{i}. {city_kr} ({city_en}), {country_kr}")
 
-                weather = get_weather_forecast(city_en, country_en)
-                st.write(f"🌦️ 날씨: {weather if weather else '정보 없음'}")
+                weather = get_weather_forecast(city_en, country_en, departure_date, travel_days)
+                if weather:
+                    st.markdown("🌦️ **날씨 예보:**")
+                    st.markdown(weather.replace("\n", "  \n"))
+                else:
+                    st.write("🌦️ 날씨 정보를 불러올 수 없습니다.")
 
                 departure_iata = location_to_iata(departure_input, country_en)
                 arrival_iata = location_to_iata(city_en, country_en)
@@ -483,14 +514,27 @@ if st.button("✈️ 추천하기"):
                 if lat and lon:
                     checkin = str(departure_date)
                     checkout = str(departure_date + timedelta(days=travel_days))
-                    hotel_info = get_hotels_with_price(lat, lon, checkin, checkout)
+                    # Google Places API 기반 호텔 정보 출력
+                    hotel_info = get_hotel_offers(lat, lon)
 
                     if hotel_info:
                         st.write("🏨 추천 호텔:")
-                        hotel_lines = [f"{name} - 💰 {price}$" for name, price in hotel_info]
-                        st.markdown("\n".join([f"- {line}" for line in hotel_lines]))
+                        for hotel in hotel_info:
+                            # 🔽 번역 추가
+                            name_ko = translate_with_deepl(hotel["name"])
+                            address_ko = translate_with_deepl(hotel["address"])
+
+                            st.subheader(name_ko)
+                            st.markdown(f"⭐ 평점: {hotel['rating']}")
+                            st.markdown(f"📍 주소: {address_ko}")
+
+                            if hotel["photo_url"]:
+                                st.image(hotel["photo_url"], use_container_width=True)
+                            st.markdown("---")
+
                     else:
                         st.write("❌ 호텔 정보를 찾을 수 없습니다.")
+
                 else:
                     st.write("❌ 도착지 공항에서 위도/경도 정보를 찾을 수 없습니다.")
 
