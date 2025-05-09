@@ -60,7 +60,13 @@ def translate_with_deepl(text):
 
     response = requests.post(url, data=params)
     result = response.json()
-    return result["translations"][0]["text"]
+    translated = result["translations"][0]["text"]
+
+    # ✅ 후처리: 'rating'이 잘못 번역되면 교정
+    if text.lower() == "rating" and translated in ["정말요", "진짜로"]:
+        return "평점"
+    return translated
+
 
 # 지역명을 IATA 코드로 변환하는 함수
 def location_to_iata(location_name: str, destination_country: str = None) -> str:
