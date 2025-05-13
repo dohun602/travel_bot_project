@@ -38,6 +38,22 @@ def load_airport_ennames():
 iata_to_name = load_airport_ennames()
 
 
+# 공항 키워드 기반 이름 분리 함수
+airport_keywords = ["공항", "Airport", "국제공항", "항공", "Terminal", "터미널"]
+
+def split_airport_from_name(full_name):
+    keywords = ["공항", "국제공항", "국제 공항"]
+    for keyword in keywords:
+        if keyword in full_name:
+            idx = full_name.find(keyword) + len(keyword)
+            # 앞에 공항 위치, 뒤에 호텔 이름이라 가정
+            airport = full_name[:idx].strip()
+            hotel = full_name[idx:].strip()
+            return hotel, airport
+    return full_name, None
+
+
+
 # load_airport_ennames에서 반환된 공항명(영문) -> 공항명(한글)로 변경하는 함수
 def get_airport_koname(iata_code):
     name_en = iata_to_name.get(iata_code)
@@ -80,12 +96,19 @@ def location_to_iata(location_name: str, destination_country: str = None) -> str
         if destination_country:
             prompt = (
                 f"'{location_name}'에서 출발한다고 가정하고, '{destination_country}'로 해외 여행을 간다고 할 때, "
-                f"가장 가까운 국제공항의 IATA 코드를 알려줘. 반드시 국제선 운항 공항이어야 해. 코드만 딱 3글자로 알려줘."
+                f"가장 가까운 국제공항의 IATA 코드를 알려줘. "
+                f"절대 도시 코드 (예: SEL, TYO, LON, PAR 등)이나 지역 내 국내공항 (예: RKV, GMP) 말고, "
+                f"반드시 실제 국제선 운항이 있는 국제공항 코드 (예: ICN, HND, LHR, KEF 등)만 3글자로 알려줘. "
+                f"정확하게 코드만 3글자로만 말해줘. 설명 없이."
             )
+
+
         else:
             prompt = (
                 f"'{location_name}'에서 출발한다고 가정하고, 국내 여행을 간다고 할 때, "
-                f"가장 가까운 국내 공항의 IATA 코드를 알려줘. 반드시 국내 공항이어야 해. 코드만 딱 3글자로 알려줘."
+                f"가장 가까운 국내 공항의 IATA 코드를 알려줘. "
+                f"절대 도시 코드 (예: SEL 등) 말고, 실제 공항 코드 (예: GMP, CJU 등)만 3글자로 정확히 알려줘. "
+                f"설명 없이 코드만 딱 3글자만 말해줘."
             )
 
         response = client.chat.completions.create(
@@ -98,10 +121,23 @@ def location_to_iata(location_name: str, destination_country: str = None) -> str
         )
 
         iata_code = response.choices[0].message.content.strip().upper()
+
+        # 도시 코드 방어 필터링
+        CITY_CODES = {"SEL", "TYO", "LON", "PAR", "NYC", "CHI", "ROM", "MIL"}
+        if iata_code in CITY_CODES:
+            raise ValueError(f"❌ 도시 코드 반환됨: {iata_code} → 실제 공항 코드가 필요합니다.")
+
+        INVALID_CODES = {"SEL", "TYO", "LON", "PAR", "NYC", "ROM", "MIL", "RKV", "GMP"}
+
+        if iata_code in INVALID_CODES or len(iata_code) != 3:
+            raise ValueError(f"❌ 부적절한 IATA 코드 반환됨: {iata_code}")
+
         if len(iata_code) == 3:
             return iata_code
         else:
             raise ValueError(f"잘못된 IATA 코드 형식: {iata_code}")
+
+
 
     except Exception as e:
         print(f"❌ ChatGPT를 통해 IATA 코드를 찾는 중 오류 발생: {e}")
@@ -211,19 +247,27 @@ def get_hotels_with_places_api(lat, lon, max_results=3, radius=2000):
     data = response.json()
 
     hotels = []
-    for h in data.get("results", [])[:max_results]:
-        name = h.get("name")
-        rating = h.get("rating", "N/A")
-        address = h.get("vicinity", "주소 없음")
 
-        # 사진
-        photo_url = None
-        if "photos" in h:
-            photo_ref = h["photos"][0]["photo_reference"]
-            photo_url = (
-                f"https://maps.googleapis.com/maps/api/place/photo"
-                f"?maxwidth=400&photoreference={photo_ref}&key={API_KEY}"
-            )
+    for h in data.get("results", []):
+        name = h.get("name", "")
+        rating = h.get("rating")
+        address = h.get("vicinity", "주소 없음")
+        photos = h.get("photos", [])
+
+        # ❌ 1. 이름에 "공항", "Airport"가 포함되면 제외
+        if "공항" in name or "Airport" in name:
+            continue
+
+        # ❌ 2. 평점이 없거나 사진이 없으면 제외
+        if not rating or not photos:
+            continue
+
+        # ✅ 사진 URL 생성
+        photo_ref = photos[0].get("photo_reference")
+        photo_url = (
+            f"https://maps.googleapis.com/maps/api/place/photo"
+            f"?maxwidth=400&photoreference={photo_ref}&key={API_KEY}"
+        )
 
         hotels.append({
             "name": name,
@@ -232,7 +276,12 @@ def get_hotels_with_places_api(lat, lon, max_results=3, radius=2000):
             "photo_url": photo_url
         })
 
+        # ✅ 원하는 수량만큼만 가져오기
+        if len(hotels) >= max_results:
+            break
+
     return hotels
+
 
 
 
@@ -478,6 +527,9 @@ preference = st.text_area("여행지에 바라는 점을 자유롭게 입력하�
 timezone_mapping = load_timezone_mapping()
 
 if st.button("✈️ 추천하기"):
+    # ✅ 추천 버튼 누를 때마다 Streamlit 내부 상태 초기화
+    st.session_state.clear()  # 전체 초기화 (원하지 않으면 선택적 초기화도 가능)
+
     st.info("ChatGPT로부터 여행지를 추천받고 있어요...")
 
     recommendations = generate_destination_recommendations(
@@ -512,10 +564,14 @@ if st.button("✈️ 추천하기"):
 
                 departure_iata = location_to_iata(departure_input, country_en)
                 arrival_iata = location_to_iata(city_en, country_en)
+                print(f"🚀 출발 IATA: {departure_iata}, 도착 IATA: {arrival_iata}")###########################
+                print("🧭 추천 목적지 확인:", recommendations)
 
                 # 호텔 정보
                 token = get_amadeus_token()
                 lat, lon = get_lat_lon_from_iata(arrival_iata)
+
+                print(f"🔎 {arrival_iata}의 위도/경도: {lat}, {lon}")
 
                 if lat and lon:
                     checkin = str(departure_date)
@@ -523,23 +579,31 @@ if st.button("✈️ 추천하기"):
                     # Google Places API 기반 호텔 정보 출력
                     hotel_info = get_hotel_offers(lat, lon)
 
-                    if hotel_info:
+                    if not hotel_info:
+                        st.write("❌ 호텔 정보를 찾을 수 없습니다.")
+                        print(f"❗ 호텔 정보 없음: {arrival_iata} (lat={lat}, lon={lon})")
+                    else:
                         st.write("🏨 추천 호텔:")
                         for hotel in hotel_info:
-                            # 🔽 번역 추가
-                            name_ko = translate_with_deepl(hotel["name"])
+                            # 사진이 없으면 출력하지 않음
+                            if not hotel["photo_url"]:
+                                continue
+
+                            # 번역
+                            name_en = hotel["name"]
+                            name_ko = translate_with_deepl(name_en)
+                            hotel_name = f"{name_ko} ({name_en})"
+
                             address_ko = translate_with_deepl(hotel["address"])
+                            address_en = hotel["address"]  # 번역 없이 그대로 사용
 
-                            st.subheader(name_ko)
+                            st.subheader(f"🏨 {hotel_name}")
                             st.markdown(f"⭐ 평점: {hotel['rating']}")
-                            st.markdown(f"📍 주소: {address_ko}")
-
-                            if hotel["photo_url"]:
-                                st.image(hotel["photo_url"], use_container_width=True)
+                            st.markdown(f"📍 주소(영문): {address_en}")
+                            st.markdown(f"📘 주소(한글): {address_ko}")
+                            st.image(hotel["photo_url"], use_container_width=True)
                             st.markdown("---")
 
-                    else:
-                        st.write("❌ 호텔 정보를 찾을 수 없습니다.")
 
                 else:
                     st.write("❌ 도착지 공항에서 위도/경도 정보를 찾을 수 없습니다.")
@@ -558,32 +622,35 @@ if st.button("✈️ 추천하기"):
                         st.write("🕒 시차 정보를 불러올 수 없습니다.")
 
                     # 항공편 정보 출력
-                    flight_info = get_flight_info(departure_iata, arrival_iata, str(departure_date))
-                    if not flight_info:
-                        st.write("✈ 항공편: 정보를 불러올 수 없습니다.")
+                    if departure_iata == arrival_iata:
+                        st.write("✈ 항공편 정보: 출발지와 도착지가 동일하여 검색하지 않습니다.")
                     else:
-                        st.write("✈ 항공편 정보:")
-                        for flight in flight_info:
-                            segments = flight["itineraries"][0]["segments"]
-                            for seg in segments:
-                                dep = seg["departure"]
-                                arr = seg["arrival"]
+                        flight_info = get_flight_info(departure_iata, arrival_iata, str(departure_date))
+                        if not flight_info:
+                            st.write("✈ 항공편: 정보를 불러올 수 없습니다.")
+                        else:
+                            st.write("✈ 항공편 정보:")
+                            for flight in flight_info:
+                                segments = flight["itineraries"][0]["segments"]
+                                for seg in segments:
+                                    dep = seg["departure"]
+                                    arr = seg["arrival"]
 
-                                dep_display = dep.get("iataCode", "출발지 미확인")
-                                arr_display = arr.get("iataCode", "도착지 미확인")
+                                    dep_display = dep.get("iataCode", "출발지 미확인")
+                                    arr_display = arr.get("iataCode", "도착지 미확인")
 
-                                dep_time = dep.get("at", "출발 시각 없음")
-                                arr_time = arr.get("at", "도착 시각 없음")
+                                    dep_time = dep.get("at", "출발 시각 없음")
+                                    arr_time = arr.get("at", "도착 시각 없음")
 
-                                dep_time_fmt = parser.parse(dep_time).strftime(
-                                    "%Y-%m-%d %H:%M") if dep_time else "출발 시각 없음"
-                                arr_time_fmt = parser.parse(arr_time).strftime(
-                                    "%Y-%m-%d %H:%M") if arr_time else "도착 시각 없음"
+                                    dep_time_fmt = parser.parse(dep_time).strftime(
+                                        "%Y-%m-%d %H:%M") if dep_time else "출발 시각 없음"
+                                    arr_time_fmt = parser.parse(arr_time).strftime(
+                                        "%Y-%m-%d %H:%M") if arr_time else "도착 시각 없음"
 
-                                dep_name = get_airport_koname(dep_display)
-                                arr_name = get_airport_koname(arr_display)
+                                    dep_name = get_airport_koname(dep_display)
+                                    arr_name = get_airport_koname(arr_display)
 
-                                st.write(f"- {dep_name} → {arr_name} / 출발: {dep_time_fmt} / 도착: {arr_time_fmt}")
+                                    st.write(f"- {dep_name} → {arr_name} / 출발: {dep_time_fmt} / 도착: {arr_time_fmt}")
                 else:
                     st.write("✈️ 항공편 정보: 찾을 수 없음.")
 
