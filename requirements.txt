@@ -1,0 +1,7 @@
+streamlit
+openai
+pymongo
+python-dateutil
+pytz
+requests
+pandas
