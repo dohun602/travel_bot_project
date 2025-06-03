@@ -604,7 +604,7 @@ if st.button("✈️ 추천하기"):
 
                             st.subheader(f"🏨 {hotel_name}")
                             st.markdown(f"⭐ 평점: {hotel['rating']}")
-                            st.markdown(f"📍 주소(영문): {address_en}")
+                            st.markdown(f"📍 주소(원문): {address_en}")
                             st.markdown(f"📘 주소(한글): {address_ko}")
                             st.image(hotel["photo_url"], use_container_width=True)
                             st.markdown("---")
