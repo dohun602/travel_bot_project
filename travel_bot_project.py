@@ -76,6 +76,11 @@ def translate_with_deepl(text):
 
     response = requests.post(url, data=params)
     result = response.json()
+
+    if "translations" not in result:
+        print("❌ DeepL 응답 오류:", result)
+        return text
+
     translated = result["translations"][0]["text"]
 
     # ✅ 후처리: 'rating'이 잘못 번역되면 교정
@@ -599,7 +604,7 @@ if st.button("✈️ 추천하기"):
 
                             st.subheader(f"🏨 {hotel_name}")
                             st.markdown(f"⭐ 평점: {hotel['rating']}")
-                            st.markdown(f"📍 주소(원문): {address_en}")
+                            st.markdown(f"📍 주소(영문): {address_en}")
                             st.markdown(f"📘 주소(한글): {address_ko}")
                             st.image(hotel["photo_url"], use_container_width=True)
                             st.markdown("---")
