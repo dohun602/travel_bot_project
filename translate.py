@@ -1,7 +1,10 @@
+
 import os
 import re
 import requests
+from mongo import load_airport_ennames
 
+iata_to_name = load_airport_ennames()
 
 def translate_with_deepl(text):
     api_key = os.getenv("DEEPL_API_KEY")
