@@ -2,6 +2,7 @@ import os
 import json
 import streamlit as st
 from datetime import datetime
+from datetime import timedelta
 from dateutil import parser
 from openai import OpenAI
 from flights import get_flight_info, get_amadeus_token
