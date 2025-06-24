@@ -239,7 +239,9 @@ def calculate_time_difference_by_iata(dep_iata: str, arr_iata: str, timezone_map
 
 
 #
-def get_hotels_with_places_api(lat, lon, max_results=3, radius=2000):
+def get_hotels_with_places_api(lat, lon, max_results=3, radius=5000):
+    import os
+    import requests
     url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
     params = {
         "location": f"{lat},{lon}",
@@ -259,13 +261,17 @@ def get_hotels_with_places_api(lat, lon, max_results=3, radius=2000):
         address = h.get("vicinity", "주소 없음")
         photos = h.get("photos", [])
 
-        # ❌ 1. 이름에 "공항", "Airport"가 포함되면 제외
-        if "공항" in name or "Airport" in name:
+        # ❌ 1. 이름에 "공항", "Airport"또는 "Terminal"가 포함되면 제외
+        airport_keywords = ["공항", "Airport", "Terminal"]
+        if any(keyword in name for keyword in airport_keywords):
             continue
 
         # ❌ 2. 평점이 없거나 사진이 없으면 제외
         if not rating or not photos:
             continue
+
+        print("총 검색된 호텔 수:", len(data.get("results", [])))
+        print("필터 후 남은 호텔 수:", len(hotels))
 
         # ✅ 사진 URL 생성
         photo_ref = photos[0].get("photo_reference")
@@ -290,49 +296,7 @@ def get_hotels_with_places_api(lat, lon, max_results=3, radius=2000):
 
 
 
-def get_hotel_offers(lat, lon, max_results=3, radius=2000):
-    import os
-    import requests
 
-    API_KEY = os.getenv("GOOGLE_PLACES_API_KEY")
-    url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
-    params = {
-        "location": f"{lat},{lon}",
-        "radius": radius,
-        "type": "lodging",
-        "key": API_KEY
-    }
-
-    response = requests.get(url, params=params)
-    if response.status_code != 200:
-        print("❌ Google Places API 요청 실패:", response.text)
-        return []
-
-    data = response.json().get("results", [])
-    hotels = []
-
-    for h in data[:max_results]:
-        name = h.get("name", "이름 없음")
-        rating = h.get("rating", "평점 없음")
-        address = h.get("vicinity", "주소 없음")
-
-        # 사진 URL 구성
-        photo_url = None
-        if "photos" in h:
-            photo_ref = h["photos"][0]["photo_reference"]
-            photo_url = (
-                f"https://maps.googleapis.com/maps/api/place/photo"
-                f"?maxwidth=400&photoreference={photo_ref}&key={API_KEY}"
-            )
-
-        hotels.append({
-            "name": name,
-            "rating": rating,
-            "address": address,
-            "photo_url": photo_url
-        })
-
-    return hotels
 #################################
 
 # iata코드를 통해 airports.xlsx에서 위도, 경도를 가져옴
@@ -582,7 +546,7 @@ if st.button("✈️ 추천하기"):
                     checkin = str(departure_date)
                     checkout = str(departure_date + timedelta(days=travel_days))
                     # Google Places API 기반 호텔 정보 출력
-                    hotel_info = get_hotel_offers(lat, lon)
+                    hotel_info = get_hotels_with_places_api(lat, lon)
 
                     if not hotel_info:
                         st.write("❌ 호텔 정보를 찾을 수 없습니다.")
@@ -658,5 +622,3 @@ if st.button("✈️ 추천하기"):
                                     st.write(f"- {dep_name} → {arr_name} / 출발: {dep_time_fmt} / 도착: {arr_time_fmt}")
                 else:
                     st.write("✈️ 항공편 정보: 찾을 수 없음.")
-
-
