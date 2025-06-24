@@ -20,6 +20,7 @@ def get_amadeus_token():
         return None
 
 
+# Amadeus 항공편 검색 함수
 def get_flight_info(departure_iata, arrival_iata, departure_date):
     token = get_amadeus_token()
     if not token:
