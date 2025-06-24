@@ -1,6 +1,9 @@
+import os
+import json
 import streamlit as st
-from datetime import datetime, timedelta
+from datetime import datetime
 from dateutil import parser
+from openai import OpenAI
 
 from mongo import load_airport_ennames, get_lat_lon_from_iata
 from translate import translate_with_deepl, get_airport_koname
@@ -10,46 +13,38 @@ from weather import get_weather_forecast
 from hotels import get_hotels_with_places_api
 from flights import get_flight_info
 
-# 데이터 로딩
+# 초기 데이터 로딩
 iata_to_name = load_airport_ennames()
 timezone_mapping = load_timezone_mapping()
-
-# UI
-st.markdown("""
-<style>
-.stApp {
-    background-image: url("https://unsplash.com/photos/M0AWNxnLaMw/download?ixid=M3wxMjA3fDB8MXxhbGx8fHx8fHx8fHwxNzQ2NzU4MjI4fA&force=true");
-    background-size: cover;
-    background-position: center;
-    background-attachment: fixed;
-}
-</style>
-""", unsafe_allow_html=True)
-
-st.title("🌍 여행지 추천하기")
-st.write("여행 조건을 입력하면 여행지를 추천하고 날씨도 알려드릴게요!")
-
-# 사용자 입력
-departure_input = st.text_input("출발지 (지역명)", "서울")
-departure_date = st.date_input("출발 날짜", datetime.today())
-travel_days = st.number_input("여행 기간 (일)", min_value=1, max_value=30, value=5)
-preference = st.text_area("여행지에 바라는 점을 자유롭게 입력하세요", "눈이 오는 곳으로 가고 싶어요")
-
-# 여행지 추천 함수
-from openai import OpenAI
-import os
-import json
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+# Streamlit 설정
+st.set_page_config(layout="wide")
+st.markdown(
+    """
+    <style>
+    .stApp {
+        background-image: url("https://unsplash.com/photos/M0AWNxnLaMw/download?force=true");
+        background-size: cover;
+        background-position: center;
+        background-attachment: fixed;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+st.title("✈️ 여행지 추천 봇")
+
+# 여행지 추천 함수
 def generate_destination_recommendations(departure_location, departure_date, travel_days, preference, num_recommendations):
     prompt = f"""
     당신은 여행 추천 도우미입니다. 아래 조건에 맞는 여행지를 {num_recommendations}개 추천해주세요.
     각 추천지는 JSON 리스트 형식으로 다음 정보를 포함해주세요:
-    - city_en: 도시명 (영문)
-    - country_en: 국가명 (영문)
-    - city_kr: 도시명 (한글)
-    - country_kr: 국가명 (한글)
-    - iata_code: 출발 가능한 공항의 IATA 코드
+    - city_en
+    - country_en
+    - city_kr
+    - country_kr
+    - iata_code
 
     조건:
     출발지: {departure_location}
@@ -57,119 +52,81 @@ def generate_destination_recommendations(departure_location, departure_date, tra
     여행 기간: {travel_days}일
     사용자 선호: {preference}
 
-    JSON 형식으로만 결과를 출력하세요. 다른 설명이나 텍스트는 절대 포함하지 마세요.
+    반드시 JSON 형식으로만 출력하고 설명은 포함하지 마세요.
     """
     response = client.chat.completions.create(
         model="gpt-4",
         messages=[
-            {"role": "system", "content": "당신은 여행지를 추천하는 전문가입니다."},
+            {"role": "system", "content": "여행지를 추천하는 전문가입니다."},
             {"role": "user", "content": prompt}
         ],
         temperature=0.7
     )
-    content = response.choices[0].message.content.strip()
     try:
-        destinations = json.loads(content)
-    except json.JSONDecodeError as e:
-        print(f"JSON 디코딩 오류: {e}")
-        destinations = []
-    return destinations
+        return json.loads(response.choices[0].message.content.strip())
+    except Exception as e:
+        st.error(f"❌ JSON 파싱 오류: {e}")
+        return []
 
-if st.button("✈️ 추천하기"):
-    st.session_state.clear()
-    st.info("ChatGPT로부터 여행지를 추천받고 있어요...")
+# Sidebar 입력
+with st.sidebar:
+    st.header("여행 조건 입력")
+    departure_location = st.text_input("출발 도시", "서울")
+    departure_date = st.date_input("출발 날짜", value=datetime.today())
+    travel_days = st.slider("여행 기간 (일)", 1, 30, 5)
+    preference = st.text_area("여행 선호도", "맛집, 풍경, 바다")
+    num_recommendations = st.slider("추천 받을 도시 수", 1, 5, 3)
+    submit = st.button("여행지 추천 받기")
 
-    recommendations = generate_destination_recommendations(
-        departure_input, str(departure_date), travel_days, preference, 3
-    )
+# 본문 출력
+if submit:
+    with st.spinner("추천 중입니다..."):
+        destinations = generate_destination_recommendations(
+            departure_location, str(departure_date), travel_days, preference, num_recommendations
+        )
 
-    if not recommendations:
-        st.error("여행지를 추천받지 못했습니다. 다시 시도해주세요.")
-    else:
-        st.caption("⏰ 출발·도착 시간은 각각의 공항 현지 시각 기준으로 표시됩니다.")
-        for i, dest in enumerate(recommendations, 1):
-            with st.container():
-                city_kr = dest.get("city_kr", "정보 없음")
-                country_kr = dest.get("country_kr", "정보 없음")
-                city_en = dest.get("city_en", "")
-                country_en = dest.get("country_en", "")
+    for dest in destinations:
+        city_en = dest["city_en"]
+        country_en = dest["country_en"]
+        city_kr = dest["city_kr"]
+        country_kr = dest["country_kr"]
+        arr_iata = dest["iata_code"]
 
-                st.subheader(f"{i}. {city_kr} ({city_en}), {country_kr}")
+        st.subheader(f"📍 {city_kr}, {country_kr} ({arr_iata})")
 
-                # 날씨 출력
-                weather = get_weather_forecast(city_en, country_en, departure_date, travel_days)
-                if weather:
-                    st.markdown("🌦️ **날씨 예보:**")
-                    st.markdown(weather.replace("\n", "  \n"))
-                else:
-                    st.write("🌦️ 날씨 정보를 불러올 수 없습니다.")
+        # 출발지 IATA 찾기
+        dep_iata = location_to_iata(departure_location, country_en)
 
-                # IATA 코드
-                departure_iata = location_to_iata(departure_input, country_en)
-                arrival_iata = location_to_iata(city_en, country_en)
+        # 시차
+        tz_diff = calculate_time_difference_by_iata(dep_iata, arr_iata, timezone_mapping)
+        if tz_diff is not None:
+            st.write(f"🕓 시차: {tz_diff:+}시간")
 
-                lat, lon = get_lat_lon_from_iata(arrival_iata)
-                if lat and lon:
-                    hotel_info = get_hotel_offers(lat, lon)
-                    if hotel_info:
-                        st.write("🏨 추천 호텔:")
-                        for hotel in hotel_info:
-                            if not hotel["photo_url"]:
-                                continue
+        # 날씨
+        st.markdown("☁️ **날씨 예보**")
+        weather_info = get_weather_forecast(city_en, country_en, departure_date, travel_days)
+        st.code(weather_info if weather_info else "날씨 정보 없음")
 
-                            name_en = hotel["name"]
-                            name_ko = translate_with_deepl(name_en)
-                            hotel_name = f"{name_ko} ({name_en})"
-                            address_ko = translate_with_deepl(hotel["address"])
-                            address_en = hotel["address"]
+        # 항공편
+        st.markdown("🛫 **항공편**")
+        flights = get_flight_info(dep_iata, arr_iata, str(departure_date))
+        if flights:
+            for f in flights:
+                price = f["price"]["total"]
+                segment = f["itineraries"][0]["segments"][0]
+                carrier = segment["carrierCode"]
+                duration = segment["duration"]
+                st.write(f"✈️ {dep_iata} → {arr_iata}, 항공사: {carrier}, 시간: {duration}, 가격: ${price}")
+        else:
+            st.write("항공편 정보 없음")
 
-                            st.subheader(f"🏨 {hotel_name}")
-                            st.markdown(f"⭐ 평점: {hotel['rating']}")
-                            st.markdown(f"📍 주소(원문): {address_en}")
-                            st.markdown(f"📘 주소(한글): {address_ko}")
-                            st.image(hotel["photo_url"], use_container_width=True)
-                            st.markdown("---")
-                    else:
-                        st.write("❌ 호텔 정보를 찾을 수 없습니다.")
-                else:
-                    st.write("❌ 도착지 공항의 위치를 찾을 수 없습니다.")
-
-                # 시차 출력
-                if departure_iata and arrival_iata:
-                    time_diff = calculate_time_difference_by_iata(departure_iata, arrival_iata, timezone_mapping)
-                    if isinstance(time_diff, int):
-                        if time_diff == 0:
-                            st.write("🕒 현지 시각은 출발지와 동일합니다.")
-                        elif time_diff > 0:
-                            st.write(f"🕒 현지 시각은 출발지보다 {time_diff}시간 빠릅니다.")
-                        else:
-                            st.write(f"🕒 현지 시각은 출발지보다 {-time_diff}시간 느립니다.")
-                    else:
-                        st.write("🕒 시차 정보를 불러올 수 없습니다.")
-
-                # 항공편 정보 출력
-                if departure_iata and arrival_iata and departure_iata != arrival_iata:
-                    flight_info = get_flight_info(departure_iata, arrival_iata, str(departure_date))
-                    if flight_info:
-                        st.write("✈ 항공편 정보:")
-                        for flight in flight_info:
-                            segments = flight["itineraries"][0]["segments"]
-                            for seg in segments:
-                                dep = seg["departure"]
-                                arr = seg["arrival"]
-                                dep_display = dep.get("iataCode", "출발지 미확인")
-                                arr_display = arr.get("iataCode", "도착지 미확인")
-                                dep_time = dep.get("at", "출발 시각 없음")
-                                arr_time = arr.get("at", "도착 시각 없음")
-
-                                dep_time_fmt = parser.parse(dep_time).strftime("%Y-%m-%d %H:%M") if dep_time else "출발 시각 없음"
-                                arr_time_fmt = parser.parse(arr_time).strftime("%Y-%m-%d %H:%M") if arr_time else "도착 시각 없음"
-
-                                dep_name = get_airport_koname(dep_display, iata_to_name)
-                                arr_name = get_airport_koname(arr_display, iata_to_name)
-
-                                st.write(f"- {dep_name} → {arr_name} / 출발: {dep_time_fmt} / 도착: {arr_time_fmt}")
-                    else:
-                        st.write("✈ 항공편: 정보를 불러올 수 없습니다.")
-                else:
-                    st.write("✈ 항공편 정보: 찾을 수 없음.")
+        # 호텔
+        st.markdown("🏨 **호텔 추천**")
+        lat, lon = get_lat_lon_from_iata(arr_iata)
+        if lat and lon:
+            hotels = get_hotels_with_places_api(lat, lon)
+            for h in hotels:
+                st.image(h["photo_url"], width=200)
+                st.write(f"{h['name']} ⭐ {h['rating']} 📍 {h['address']}")
+        else:
+            st.write("호텔 정보를 가져올 수 없습니다.")
