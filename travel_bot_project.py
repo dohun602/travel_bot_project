@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from dateutil import parser
 import json
 import pytz
+import re
 import pandas as pd
 from openai import OpenAI
 from pymongo import MongoClient
@@ -88,6 +89,19 @@ def translate_with_deepl(text):
         return "평점"
     return translated
 
+def smart_protect_entities(text):
+    tokens = text.split()
+    protected = []
+    for token in tokens:
+        if token[0].isupper() or "-" in token:
+            protected.append(f"__{token}__")
+        else:
+            protected.append(token)
+    return " ".join(protected)
+
+
+def restore_entities(text):
+    return re.sub(r"__([A-Za-z\-]+)__", r"\1", text)
 
 # 지역명을 IATA 코드로 변환하는 함수
 def location_to_iata(location_name: str, destination_country: str = None) -> str:
@@ -141,8 +155,6 @@ def location_to_iata(location_name: str, destination_country: str = None) -> str
             return iata_code
         else:
             raise ValueError(f"잘못된 IATA 코드 형식: {iata_code}")
-
-
 
     except Exception as e:
         print(f"❌ ChatGPT를 통해 IATA 코드를 찾는 중 오류 발생: {e}")
@@ -294,10 +306,6 @@ def get_hotels_with_places_api(lat, lon, max_results=3, radius=5000):
     return hotels
 
 
-
-
-
-#################################
 
 # iata코드를 통해 airports.xlsx에서 위도, 경도를 가져옴
 def get_lat_lon_from_iata(iata_code):
