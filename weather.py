@@ -30,6 +30,7 @@ def map_weather_code(code):
     return code_map.get(code, "🌈 알 수 없는 날씨")
 
 
+# 날씨 API - Open-Meteo
 def get_weather_forecast(city_name, country_name, start_date, days):
     try:
         location = f"{city_name}, {country_name}"
