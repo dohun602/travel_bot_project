@@ -3,6 +3,7 @@ from openai import OpenAI
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+
 def split_airport_from_name(full_name):
     keywords = ["공항", "국제공항", "국제 공항"]
     for keyword in keywords:
@@ -13,7 +14,8 @@ def split_airport_from_name(full_name):
             hotel = full_name[idx:].strip()
             return hotel, airport
     return full_name, None
-    
+
+
 def location_to_iata(location_name: str, destination_country: str = None) -> str:
     if location_name.lower() in ["서울", "seoul"]:
         if destination_country and destination_country.lower() not in ["korea", "south korea", "대한민국", "한국"]:
