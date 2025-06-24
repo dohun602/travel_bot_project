@@ -6,14 +6,26 @@ import requests
 def translate_with_deepl(text):
     api_key = os.getenv("DEEPL_API_KEY")
     url = "https://api-free.deepl.com/v2/translate"
+
     params = {
         "auth_key": api_key,
         "text": text,
         "target_lang": "KO"
     }
+
     response = requests.post(url, data=params)
     result = response.json()
-    return result["translations"][0]["text"]
+
+    if "translations" not in result:
+        print("❌ DeepL 응답 오류:", result)
+        return text
+
+    translated = result["translations"][0]["text"]
+
+    # ✅ 후처리: 'rating'이 잘못 번역되면 교정
+    if text.lower() == "rating" and translated in ["정말요", "진짜로"]:
+        return "평점"
+    return translated
 
 
 def smart_protect_entities(text):
@@ -31,9 +43,10 @@ def restore_entities(text):
     return re.sub(r"__([A-Za-z\-]+)__", r"\1", text)
 
 
-def get_airport_koname(iata_code, iata_to_name):
+def get_airport_koname(iata_code):
     name_en = iata_to_name.get(iata_code)
     if not name_en:
         return iata_code
+
     name_ko = translate_with_deepl(name_en)
     return f"{name_ko} ({iata_code})"
