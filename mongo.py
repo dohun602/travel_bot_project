@@ -40,6 +40,3 @@ def get_lat_lon_from_iata(iata_code):
     except Exception as e:
         print(f"❌ 위도/경도 조회 실패: {e}")
         return None, None
-    else:
-        print(f"❌ '{iata_code}' 코드에 해당하는 공항을 찾을 수 없습니다.")
-        return None, None
