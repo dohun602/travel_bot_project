@@ -6,14 +6,13 @@ from datetime import timedelta
 from dateutil import parser
 from openai import OpenAI
 from flights import get_flight_info, get_amadeus_token
-from mongo import load_airport_ennames, get_lat_lon_from_iata
+from mongo import  get_lat_lon_from_iata
 from translate import translate_with_deepl, get_airport_koname
 from iata import location_to_iata
 from timezone import load_timezone_mapping, calculate_time_difference_by_iata
 from weather import get_weather_forecast
 from hotels import get_hotels_with_places_api
-
-
+from mongo import load_airport_ennames
 # 초기 데이터 로딩
 iata_to_name = load_airport_ennames()
 timezone_mapping = load_timezone_mapping()
