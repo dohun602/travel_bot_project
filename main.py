@@ -7,7 +7,7 @@ from translate import translate_with_deepl, get_airport_koname
 from iata import location_to_iata
 from timezone import load_timezone_mapping, calculate_time_difference_by_iata
 from weather import get_weather_forecast
-from hotels import get_hotel_offers
+from hotels import get_hotels_with_places_api
 from flights import get_flight_info
 
 # 데이터 로딩
