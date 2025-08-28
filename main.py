@@ -5,13 +5,12 @@ from datetime import datetime
 from datetime import timedelta
 from dateutil import parser
 from openai import OpenAI
-from flights import get_flight_info, get_amadeus_token
-from mongo import  get_lat_lon_from_iata
+from flights import get_flight_info
 from translate import translate_with_deepl, get_airport_koname
 from iata import location_to_iata
 from timezone import load_timezone_mapping, calculate_time_difference_by_iata
 from weather import get_weather_forecast
-from hotels import get_hotels_with_places_api
+from hotels import get_hotels_with_hotellook
 from mongo import load_airport_ennames
 # 초기 데이터 로딩
 iata_to_name = load_airport_ennames()
@@ -131,46 +130,70 @@ if st.button("✈️ 추천하기"):
                 print(f"🚀 출발 IATA: {departure_iata}, 도착 IATA: {arrival_iata}")###########################
                 print("🧭 추천 목적지 확인:", recommendations)
 
-                # 호텔 정보
-                token = get_amadeus_token()
-                lat, lon = get_lat_lon_from_iata(arrival_iata)
+                # 호텔 정보 (HotelLook 전용)
+                checkin = str(departure_date)
+                checkout = str(departure_date + timedelta(days=travel_days))
 
-                print(f"🔎 {arrival_iata}의 위도/경도: {lat}, {lon}")
+                try:
+                    hotel_info = get_hotels_with_hotellook(
+                        city_en, checkin, checkout, currency="KRW", limit=3
+                    )
+                except Exception as e:
+                    st.warning("호텔 API 응답이 잠시 지연되고 있어요. 다시 시도해 주세요.")
+                    print("HotelLook fatal:", e)
+                    hotel_info = []
 
-                if lat and lon:
-                    checkin = str(departure_date)
-                    checkout = str(departure_date + timedelta(days=travel_days))
-                    # Google Places API 기반 호텔 정보 출력
-                    hotel_info = get_hotels_with_places_api(lat, lon)
-
-                    if not hotel_info:
-                        st.write("❌ 호텔 정보를 찾을 수 없습니다.")
-                        print(f"❗ 호텔 정보 없음: {arrival_iata} (lat={lat}, lon={lon})")
-                    else:
-                        st.write("🏨 추천 호텔:")
-                        for hotel in hotel_info:
-                            # 사진이 없으면 출력하지 않음
-                            if not hotel["photo_url"]:
-                                continue
-
-                            # 번역
-                            name_en = hotel["name"]
-                            name_ko = translate_with_deepl(name_en)
-                            hotel_name = f"{name_ko} ({name_en})"
-
-                            address_ko = translate_with_deepl(hotel["address"])
-                            address_en = hotel["address"]  # 번역 없이 그대로 사용
-
-                            st.subheader(f"🏨 {hotel_name}")
-                            st.markdown(f"⭐ 평점: {hotel['rating']}")
-                            st.markdown(f"📍 주소(원문): {address_en}")
-                            st.markdown(f"📘 주소(한글): {address_ko}")
-                            st.image(hotel["photo_url"], use_container_width=True)
-                            st.markdown("---")
-
-
+                if not hotel_info:
+                    st.write("❌ 호텔 정보를 찾을 수 없습니다.")
+                    print(f"❗ 호텔 정보 없음: {city_en} ({checkin} ~ {checkout})")
                 else:
-                    st.write("❌ 도착지 공항에서 위도/경도 정보를 찾을 수 없습니다.")
+                    st.write("🏨 추천 호텔:")
+                    for h in hotel_info:
+                        name_en = h.get("name") or "(no name)"
+                        # 번역은 예외 안전하게
+                        try:
+                            name_ko = translate_with_deepl(name_en) if name_en and name_en != "(no name)" else name_en
+                        except Exception:
+                            name_ko = name_en
+                        hotel_name = f"{name_ko} ({name_en})" if name_ko and name_ko != name_en else name_en
+
+                        stars = h.get("rating")
+                        rating_text = f"{stars}성급" if stars is not None else "등급 정보 없음"
+
+                        price = h.get("price")
+                        price_avg = h.get("priceAvg")  # hotels.py에서 priceAvg==price면 None으로 처리해 둠
+                        cur = h.get("currency", "KRW")
+
+                        addr = h.get("address") or "주소 정보 없음"
+                        try:
+                            addr_ko = translate_with_deepl(addr) if addr and addr != "주소 정보 없음" else addr
+                        except Exception:
+                            addr_ko = addr
+
+                        lat, lon = h.get("lat"), h.get("lon")
+                        dist = h.get("distance")
+
+                        st.subheader(f"🏨 {hotel_name}")
+                        st.markdown(f"⭐ 등급: {rating_text}")
+                        if price is not None:
+                            try:
+                                st.markdown(f"💵 최저가: {float(price):,.0f} {cur}")
+                            except Exception:
+                                st.markdown(f"💵 최저가: {price} {cur}")
+                        if price_avg is not None:  # 평균가가 유효할 때만 노출
+                            try:
+                                st.markdown(f"🧮 평균가: {float(price_avg):,.0f} {cur}")
+                            except Exception:
+                                st.markdown(f"🧮 평균가: {price_avg} {cur}")
+
+                        st.markdown(f"📍 주소(원문): {addr}")
+                        if addr_ko != addr:
+                            st.markdown(f"📘 주소(한글): {addr_ko}")
+                        if lat is not None and lon is not None:
+                            st.caption(f"🧭호텔 좌표: 위도:{lat}, 경도:{lon}")
+                        if dist is not None:
+                            st.caption(f"📏 중심지까지 거리(추정): {dist} km")
+                        st.markdown("---")
 
                 # 시차 계산 및 출력
                 if departure_iata and arrival_iata:
