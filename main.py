@@ -11,9 +11,9 @@ from iata import location_to_iata
 from timezone import load_timezone_mapping, calculate_time_difference_by_iata
 from weather import get_weather_forecast
 from hotels import get_hotels_with_hotellook
-from mongo import load_airport_ennames
+
 # 초기 데이터 로딩
-iata_to_name = load_airport_ennames()
+
 timezone_mapping = load_timezone_mapping()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
@@ -86,8 +86,11 @@ departure_input = st.text_input("출발지 (지역명)", "서울")
 departure_date = st.date_input("출발 날짜", datetime.today())
 travel_days = st.number_input("여행 기간 (일)", min_value=1, max_value=30, value=5)
 preference = st.text_area("여행지에 바라는 점을 자유롭게 입력하세요", "눈이 오는 곳으로 가고 싶어요")
+# 여행기간(일)을 "며칠 동안"으로 해석 → 박수 = 일수 - 1
+nights = max(int(travel_days) - 1, 0)
+checkin_date = departure_date
+checkout_date = departure_date + timedelta(days=nights)  # 호텔 총액 계산용(0박이면 = checkin)
 
-timezone_mapping = load_timezone_mapping()
 
 if st.button("✈️ 추천하기"):
     # ✅ 추천 버튼 누를 때마다 Streamlit 내부 상태 초기화
@@ -131,17 +134,21 @@ if st.button("✈️ 추천하기"):
                 print("🧭 추천 목적지 확인:", recommendations)
 
                 # 호텔 정보 (HotelLook 전용)
-                checkin = str(departure_date)
-                checkout = str(departure_date + timedelta(days=travel_days))
-
-                try:
-                    hotel_info = get_hotels_with_hotellook(
-                        city_en, checkin, checkout, currency="KRW", limit=3
-                    )
-                except Exception as e:
-                    st.warning("호텔 API 응답이 잠시 지연되고 있어요. 다시 시도해 주세요.")
-                    print("HotelLook fatal:", e)
+                if nights <= 0:
+                    st.info("🛏️ 당일치기 일정(0박)이므로 호텔 검색을 생략합니다.")
                     hotel_info = []
+                else:
+                    checkin = str(checkin_date)
+                    checkout = str(checkout_date)
+                    try:
+                        hotel_info = get_hotels_with_hotellook(
+                            city_en, checkin, checkout, currency="KRW", limit=3
+                        )
+                    except Exception as e:
+                        st.warning("호텔 API 응답이 잠시 지연되고 있어요. 다시 시도해 주세요.")
+                        print("HotelLook fatal:", e)
+                        hotel_info = []
+
 
                 if not hotel_info:
                     st.write("❌ 호텔 정보를 찾을 수 없습니다.")
@@ -175,16 +182,28 @@ if st.button("✈️ 추천하기"):
 
                         st.subheader(f"🏨 {hotel_name}")
                         st.markdown(f"⭐ 등급: {rating_text}")
+
+
+                        # 숙박 안내
+                        st.caption(f"🛏️ 숙박: {nights}박 {nights + 1}일")
+
                         if price is not None:
                             try:
-                                st.markdown(f"💵 최저가: {float(price):,.0f} {cur}")
+                                total_price = float(price)
+                                st.markdown(f"💵 최저가(총액): {total_price:,.0f} {cur}")
+                                if nights > 0:
+                                    st.markdown(f"💵 1박당 최저가: {total_price / nights:,.0f} {cur}")
                             except Exception:
-                                st.markdown(f"💵 최저가: {price} {cur}")
-                        if price_avg is not None:  # 평균가가 유효할 때만 노출
+                                st.markdown(f"💵 최저가(총액): {price} {cur}")
+
+                        if price_avg is not None:
                             try:
-                                st.markdown(f"🧮 평균가: {float(price_avg):,.0f} {cur}")
+                                total_avg = float(price_avg)
+                                st.markdown(f"🧮 평균가(총액): {total_avg:,.0f} {cur}")
+                                if nights > 0:
+                                    st.markdown(f"🧮 1박당 평균가: {total_avg / nights:,.0f} {cur}")
                             except Exception:
-                                st.markdown(f"🧮 평균가: {price_avg} {cur}")
+                                st.markdown(f"🧮 평균가(총액): {price_avg} {cur}")
 
                         st.markdown(f"📍 주소(원문): {addr}")
                         if addr_ko != addr:
