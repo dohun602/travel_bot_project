@@ -40,3 +40,23 @@ def get_lat_lon_from_iata(iata_code):
     except Exception as e:
         print(f"❌ 위도/경도 조회 실패: {e}")
         return None, None
+
+def get_airport_name_from_iata(iata_code):
+    """IATA 코드로 공항 'Name'을 반환. 없으면 City 기반 대체."""
+    try:
+        uri = "mongodb+srv://stardohun201:%40ldh258741@cluster0.uldhbqe.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+        client = MongoClient(uri)
+        db = client["travel_bot_db"]
+        collection = db["airports"]
+
+        doc = collection.find_one({"IATA Code": iata_code.upper()}, {"Name": 1, "City": 1})
+        if not doc:
+            return None
+        name = doc.get("Name")
+        if not name:
+            city = doc.get("City")
+            if city:
+                name = f"{city} Airport"
+        return name
+    except Exception:
+        return None
