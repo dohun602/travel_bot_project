@@ -1,45 +1,38 @@
 import os
 import json
 import streamlit as st
-from datetime import datetime
-from datetime import timedelta
+from datetime import datetime, timedelta
 from dateutil import parser
 from openai import OpenAI
+from hotels_hotelbeds import get_hotels_hotelbeds
+from hotels_amadeus import get_hotels_amadeus
 from flights import get_flight_info
 from translate import translate_with_deepl, get_airport_koname
 from iata import location_to_iata
 from timezone import load_timezone_mapping, calculate_time_difference_by_iata
 from weather import get_weather_forecast
-from hotels import get_hotels_with_hotellook
+from mongo import load_airport_ennames, get_lat_lon_from_iata
 
-# 초기 데이터 로딩
-
+# ✅ 초기 로드
+iata_to_name = load_airport_ennames()
 timezone_mapping = load_timezone_mapping()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# Streamlit 설정
-st.markdown(
-    """
-    <style>
-    .stApp {
-        background-image: url("https://unsplash.com/photos/M0AWNxnLaMw/download?ixid=M3wxMjA3fDB8MXxhbGx8fHx8fHx8fHwxNzQ2NzU4MjI4fA&force=true");
-        background-size: cover;
-        background-position: center;
-        background-attachment: fixed;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
+# ✅ Streamlit 배경
+st.markdown("""
+<style>
+.stApp {
+    background-image: url("https://unsplash.com/photos/M0AWNxnLaMw/download?force=true");
+    background-size: cover;
+    background-position: center;
+    background-attachment: fixed;
+}
+</style>
+""", unsafe_allow_html=True)
 
+st.title("🌍 여행지 추천 앱")
 
-
-
-# ✅ Streamlit UI 시작 전에 timezone_mapping 로드
-st.title("여행 추천 앱")
-timezone_mapping = load_timezone_mapping()
-
-# 여행지 추천 함수    문제없음
+# ✅ 여행지 추천 함수
 def generate_destination_recommendations(departure_location, departure_date, travel_days, preference, num_recommendations):
     prompt = f"""
     당신은 여행 추천 도우미입니다. 아래 조건에 맞는 여행지를 {num_recommendations}개 추천해주세요.
@@ -48,7 +41,7 @@ def generate_destination_recommendations(departure_location, departure_date, tra
     - country_en: 국가명 (영문)
     - city_kr: 도시명 (한글)
     - country_kr: 국가명 (한글)
-    - iata_code: 출발 가능한 공항의 IATA 코드 (예: ICN, NRT)
+    - iata_code: 해당 지역의 공항 IATA 코드
 
     조건:
     출발지: {departure_location}
@@ -56,7 +49,7 @@ def generate_destination_recommendations(departure_location, departure_date, tra
     여행 기간: {travel_days}일
     사용자 선호: {preference}
 
-    JSON 형식으로만 결과를 출력하세요. 다른 설명이나 텍스트는 절대 포함하지 마세요.
+    JSON 형식으로만 출력하세요.
     """
 
     response = client.chat.completions.create(
@@ -67,38 +60,34 @@ def generate_destination_recommendations(departure_location, departure_date, tra
         ],
         temperature=0.7
     )
-
-    content = response.choices[0].message.content.strip()
-
     try:
-        destinations = json.loads(content)
-    except json.JSONDecodeError as e:
-        print(f"JSON 디코딩 오류: {e}")
-        destinations = []
+        return json.loads(response.choices[0].message.content.strip())
+    except json.JSONDecodeError:
+        return []
 
-    return destinations
+# ✅ 호텔 병합 함수
+def _merge_hotels(a, b, limit=5):
+    seen = set()
+    merged = []
+    for src in (a + b):
+        name = (src.get("name") or "").strip().lower()
+        key = (name, round(float(src.get("lat") or 0), 3), round(float(src.get("lon") or 0), 3))
+        if name and key not in seen:
+            seen.add(key)
+            merged.append(src)
+    merged.sort(key=lambda x: (x.get("price") is None, float(x.get("price") or 0)))
+    return merged[:limit]
 
-
-st.title("🌍 여행지 추천하기")
-st.write("여행 조건을 입력하면 여행지를 추천하고 날씨도 알려드릴게요!")
-
-departure_input = st.text_input("출발지 (지역명)", "서울")
+# ✅ UI 입력
+departure_input = st.text_input("출발지 (도시명)", "서울")
 departure_date = st.date_input("출발 날짜", datetime.today())
 travel_days = st.number_input("여행 기간 (일)", min_value=1, max_value=30, value=5)
-preference = st.text_area("여행지에 바라는 점을 자유롭게 입력하세요", "눈이 오는 곳으로 가고 싶어요")
-# 여행기간(일)을 "며칠 동안"으로 해석 → 박수 = 일수 - 1
-nights = max(int(travel_days) - 1, 0)
-checkin_date = departure_date
-checkout_date = departure_date + timedelta(days=nights)  # 호텔 총액 계산용(0박이면 = checkin)
-
+preference = st.text_area("여행지에 바라는 점", "눈이 오는 곳으로 가고 싶어요")
 
 if st.button("✈️ 추천하기"):
-    # ✅ 추천 버튼 누를 때마다 Streamlit 내부 상태 초기화
-    st.session_state.clear()  # 전체 초기화 (원하지 않으면 선택적 초기화도 가능)
+    st.info("여행지를 추천받고 있어요...")
 
-    st.info("ChatGPT로부터 여행지를 추천받고 있어요...")
-
-    recommendations = generate_destination_recommendations(
+    destinations = generate_destination_recommendations(
         departure_location=departure_input,
         departure_date=str(departure_date),
         travel_days=travel_days,
@@ -106,156 +95,102 @@ if st.button("✈️ 추천하기"):
         num_recommendations=3
     )
 
-    if not recommendations:
-        st.error("여행지를 추천받지 못했습니다. 다시 시도해주세요.")
+    if not destinations:
+        st.error("추천 결과를 불러올 수 없습니다.")
     else:
-        st.caption("⏰ 출발·도착 시간은 각각의 공항 현지 시각 기준으로 표시됩니다.")
-        for i, dest in enumerate(recommendations, 1):
-            with st.container():
-                hotel_info = None
+        for i, dest in enumerate(destinations, 1):
+            st.markdown(f"## {i}. {dest['city_kr']} ({dest['city_en']}), {dest['country_kr']}")
 
-                city_kr = dest.get("city_kr", "정보 없음")
-                country_kr = dest.get("country_kr", "정보 없음")
-                city_en = dest.get("city_en", "")
-                country_en = dest.get("country_en", "")
+            city_en = dest["city_en"]
+            country_en = dest["country_en"]
 
-                st.subheader(f"{i}. {city_kr} ({city_en}), {country_kr}")
+            # ✅ 날씨
+            weather = get_weather_forecast(city_en, country_en, departure_date, travel_days)
+            if weather:
+                st.markdown("🌦️ **날씨 예보:**")
+                st.markdown(weather.replace("\n", "  \n"))
+            else:
+                st.write("🌦️ 날씨 정보를 불러올 수 없습니다.")
 
-                weather = get_weather_forecast(city_en, country_en, departure_date, travel_days)
-                if weather:
-                    st.markdown("🌦️ **날씨 예보:**")
-                    st.markdown(weather.replace("\n", "  \n"))
-                else:
-                    st.write("🌦️ 날씨 정보를 불러올 수 없습니다.")
+            # ✅ IATA, 좌표
+            departure_iata = location_to_iata(departure_input, country_en)
+            arrival_iata = dest.get("iata_code") or location_to_iata(city_en, country_en)
+            lat, lon = get_lat_lon_from_iata(arrival_iata) if arrival_iata else (None, None)
 
-                departure_iata = location_to_iata(departure_input, country_en)
-                arrival_iata = location_to_iata(city_en, country_en)
-                print(f"🚀 출발 IATA: {departure_iata}, 도착 IATA: {arrival_iata}")###########################
-                print("🧭 추천 목적지 확인:", recommendations)
+            checkin = str(departure_date)
+            checkout = str(departure_date + timedelta(days=travel_days))
 
-                # 호텔 정보 (HotelLook 전용)
-                if nights <= 0:
-                    st.info("🛏️ 당일치기 일정(0박)이므로 호텔 검색을 생략합니다.")
-                    hotel_info = []
-                else:
-                    checkin = str(checkin_date)
-                    checkout = str(checkout_date)
-                    try:
-                        hotel_info = get_hotels_with_hotellook(
-                            city_en, checkin, checkout, currency="KRW", limit=3
+            # ✅ 호텔: Amadeus + Hotelbeds 하이브리드
+            amadeus_list, hotelbeds_list = [], []
+            try:
+                if lat and lon:
+                    amadeus_list = get_hotels_amadeus(
+                        checkin=checkin,
+                        checkout=checkout,
+                        adults=2,
+                        limit=3,
+                        lat_lon=(lat, lon),
+                        city_code=arrival_iata
+                    )
+                    if not amadeus_list:
+                        hotelbeds_list = get_hotels_hotelbeds(
+                            checkin=checkin,
+                            checkout=checkout,
+                            adults=2,
+                            limit=3,
+                            lat_lon=(lat, lon),
+                            radius_km=25
                         )
-                    except Exception as e:
-                        st.warning("호텔 API 응답이 잠시 지연되고 있어요. 다시 시도해 주세요.")
-                        print("HotelLook fatal:", e)
-                        hotel_info = []
-
-
-                if not hotel_info:
-                    st.write("❌ 호텔 정보를 찾을 수 없습니다.")
-                    print(f"❗ 호텔 정보 없음: {city_en} ({checkin} ~ {checkout})")
                 else:
-                    st.write("🏨 추천 호텔:")
-                    for h in hotel_info:
-                        name_en = h.get("name") or "(no name)"
-                        # 번역은 예외 안전하게
-                        try:
-                            name_ko = translate_with_deepl(name_en) if name_en and name_en != "(no name)" else name_en
-                        except Exception:
-                            name_ko = name_en
-                        hotel_name = f"{name_ko} ({name_en})" if name_ko and name_ko != name_en else name_en
+                    amadeus_list = get_hotels_amadeus(
+                        city_code=arrival_iata,
+                        checkin=checkin,
+                        checkout=checkout,
+                        adults=2,
+                        limit=3
+                    )
 
-                        stars = h.get("rating")
-                        rating_text = f"{stars}성급" if stars is not None else "등급 정보 없음"
+                hotel_info = _merge_hotels(amadeus_list, hotelbeds_list, limit=3)
+            except Exception as e:
+                st.warning("호텔 API 호출 중 오류가 발생했습니다.")
+                print("호텔 API 에러:", e)
+                hotel_info = []
 
-                        price = h.get("price")
-                        price_avg = h.get("priceAvg")  # hotels.py에서 priceAvg==price면 None으로 처리해 둠
-                        cur = h.get("currency", "KRW")
+            # ✅ 호텔 출력
+            if not hotel_info:
+                st.write("❌ 호텔 정보를 찾을 수 없습니다.")
+            else:
+                st.write("🏨 **추천 호텔:**")
+                for h in hotel_info:
+                    name_en = h.get("name", "Unknown")
+                    price = h.get("price")
+                    currency = h.get("currency", "KRW")
+                    stars = h.get("stars", "N/A")
+                    address = h.get("address", "주소 정보 없음")
 
-                        addr = h.get("address") or "주소 정보 없음"
-                        try:
-                            addr_ko = translate_with_deepl(addr) if addr and addr != "주소 정보 없음" else addr
-                        except Exception:
-                            addr_ko = addr
+                    st.markdown(f"**🏨 {name_en}**")
+                    st.markdown(f"- ⭐ 성급: {stars}")
+                    if price:
+                        st.markdown(f"- 💵 가격: {price} {currency}")
+                    st.markdown(f"- 📍 주소: {address}")
+                    st.markdown("---")
 
-                        lat, lon = h.get("lat"), h.get("lon")
-                        dist = h.get("distance")
-
-                        st.subheader(f"🏨 {hotel_name}")
-                        st.markdown(f"⭐ 등급: {rating_text}")
-
-
-                        # 숙박 안내
-                        st.caption(f"🛏️ 숙박: {nights}박 {nights + 1}일")
-
-                        if price is not None:
-                            try:
-                                total_price = float(price)
-                                st.markdown(f"💵 최저가(총액): {total_price:,.0f} {cur}")
-                                if nights > 0:
-                                    st.markdown(f"💵 1박당 최저가: {total_price / nights:,.0f} {cur}")
-                            except Exception:
-                                st.markdown(f"💵 최저가(총액): {price} {cur}")
-
-                        if price_avg is not None:
-                            try:
-                                total_avg = float(price_avg)
-                                st.markdown(f"🧮 평균가(총액): {total_avg:,.0f} {cur}")
-                                if nights > 0:
-                                    st.markdown(f"🧮 1박당 평균가: {total_avg / nights:,.0f} {cur}")
-                            except Exception:
-                                st.markdown(f"🧮 평균가(총액): {price_avg} {cur}")
-
-                        st.markdown(f"📍 주소(원문): {addr}")
-                        if addr_ko != addr:
-                            st.markdown(f"📘 주소(한글): {addr_ko}")
-                        if lat is not None and lon is not None:
-                            st.caption(f"🧭호텔 좌표: 위도:{lat}, 경도:{lon}")
-                        if dist is not None:
-                            st.caption(f"📏 중심지까지 거리(추정): {dist} km")
-                        st.markdown("---")
-
-                # 시차 계산 및 출력
-                if departure_iata and arrival_iata:
-                    time_diff = calculate_time_difference_by_iata(departure_iata, arrival_iata, timezone_mapping)
-                    if isinstance(time_diff, int):
-                        if time_diff == 0:
-                            st.write("🕒 현지 시각은 출발지와 동일합니다.")
-                        elif time_diff > 0:
-                            st.write(f"🕒 현지 시각은 출발지보다 {time_diff}시간 빠릅니다.")
-                        else:
-                            st.write(f"🕒 현지 시각은 출발지보다 {-time_diff}시간 느립니다.")
+            # ✅ 시차 + 항공편
+            if departure_iata and arrival_iata:
+                diff = calculate_time_difference_by_iata(departure_iata, arrival_iata, timezone_mapping)
+                if isinstance(diff, int):
+                    if diff == 0:
+                        st.write("🕒 현지 시각은 출발지와 동일합니다.")
+                    elif diff > 0:
+                        st.write(f"🕒 현지 시각은 출발지보다 {diff}시간 빠릅니다.")
                     else:
-                        st.write("🕒 시차 정보를 불러올 수 없습니다.")
+                        st.write(f"🕒 현지 시각은 출발지보다 {-diff}시간 느립니다.")
 
-                    # 항공편 정보 출력
-                    if departure_iata == arrival_iata:
-                        st.write("✈ 항공편 정보: 출발지와 도착지가 동일하여 검색하지 않습니다.")
-                    else:
-                        flight_info = get_flight_info(departure_iata, arrival_iata, str(departure_date))
-                        if not flight_info:
-                            st.write("✈ 항공편: 정보를 불러올 수 없습니다.")
-                        else:
-                            st.write("✈ 항공편 정보:")
-                            for flight in flight_info:
-                                segments = flight["itineraries"][0]["segments"]
-                                for seg in segments:
-                                    dep = seg["departure"]
-                                    arr = seg["arrival"]
-
-                                    dep_display = dep.get("iataCode", "출발지 미확인")
-                                    arr_display = arr.get("iataCode", "도착지 미확인")
-
-                                    dep_time = dep.get("at", "출발 시각 없음")
-                                    arr_time = arr.get("at", "도착 시각 없음")
-
-                                    dep_time_fmt = parser.parse(dep_time).strftime(
-                                        "%Y-%m-%d %H:%M") if dep_time else "출발 시각 없음"
-                                    arr_time_fmt = parser.parse(arr_time).strftime(
-                                        "%Y-%m-%d %H:%M") if arr_time else "도착 시각 없음"
-
-                                    dep_name = get_airport_koname(dep_display)
-                                    arr_name = get_airport_koname(arr_display)
-
-                                    st.write(f"- {dep_name} → {arr_name} / 출발: {dep_time_fmt} / 도착: {arr_time_fmt}")
-                else:
-                    st.write("✈️ 항공편 정보: 찾을 수 없음.")
+                if departure_iata != arrival_iata:
+                    flight_info = get_flight_info(departure_iata, arrival_iata, str(departure_date))
+                    if flight_info:
+                        st.markdown("✈️ **항공편 정보:**")
+                        for flight in flight_info:
+                            seg = flight["itineraries"][0]["segments"][0]
+                            dep, arr = seg["departure"], seg["arrival"]
+                            st.write(f"- {dep['iataCode']} → {arr['iataCode']} / {dep['at']} → {arr['at']}")
