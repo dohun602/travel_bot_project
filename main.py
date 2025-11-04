@@ -2,23 +2,28 @@ import os
 import json
 import streamlit as st
 from datetime import datetime, timedelta
-from dateutil import parser
 from openai import OpenAI
-from hotels_hotelbeds import get_hotels_hotelbeds
-from hotels_amadeus import get_hotels_amadeus
+from places_enrich_locationiq import enrich_with_locationiq
+from hotels_LITE import search_hotels
 from flights import get_flight_info
-from translate import translate_with_deepl, get_airport_koname
+from translate import get_airport_koname, translate_with_deepl
 from iata import location_to_iata
 from timezone import load_timezone_mapping, calculate_time_difference_by_iata
 from weather import get_weather_forecast
-from mongo import load_airport_ennames, get_lat_lon_from_iata
+from mongo import load_airport_ennames, get_lat_lon_from_iata, get_airport_name_from_iata
+from places_enrich_locationiq import enrich_with_locationiq
+from price_enrich_google import enrich_price_level
 
-# ✅ 초기 로드
+# ──────────────────────────────────────────────────────────────────────────────
+# 초기 로드
+# ──────────────────────────────────────────────────────────────────────────────
 iata_to_name = load_airport_ennames()
 timezone_mapping = load_timezone_mapping()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# ✅ Streamlit 배경
+# ──────────────────────────────────────────────────────────────────────────────
+# 배경
+# ──────────────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
 .stApp {
@@ -32,7 +37,9 @@ st.markdown("""
 
 st.title("🌍 여행지 추천 앱")
 
-# ✅ 여행지 추천 함수
+# ──────────────────────────────────────────────────────────────────────────────
+# 여행지 추천 (LLM)
+# ──────────────────────────────────────────────────────────────────────────────
 def generate_destination_recommendations(departure_location, departure_date, travel_days, preference, num_recommendations):
     prompt = f"""
     당신은 여행 추천 도우미입니다. 아래 조건에 맞는 여행지를 {num_recommendations}개 추천해주세요.
@@ -65,25 +72,87 @@ def generate_destination_recommendations(departure_location, departure_date, tra
     except json.JSONDecodeError:
         return []
 
-# ✅ 호텔 병합 함수
-def _merge_hotels(a, b, limit=5):
-    seen = set()
-    merged = []
-    for src in (a + b):
-        name = (src.get("name") or "").strip().lower()
-        key = (name, round(float(src.get("lat") or 0), 3), round(float(src.get("lon") or 0), 3))
-        if name and key not in seen:
-            seen.add(key)
-            merged.append(src)
-    merged.sort(key=lambda x: (x.get("price") is None, float(x.get("price") or 0)))
-    return merged[:limit]
+# ──────────────────────────────────────────────────────────────────────────────
+# 호텔 카드 렌더링
+# ──────────────────────────────────────────────────────────────────────────────
+def render_hotels(hotels):
+    if not hotels:
+        st.write("❌ 호텔 정보를 찾을 수 없습니다.")
+        return
 
-# ✅ UI 입력
+    st.write("🏨 **추천 호텔:**")
+
+    # 한글 번역 매핑 (핵심 20개 정도만 미리 정의)
+    amenity_map = {
+        "Free Wi-Fi": "🌐 무료 Wi-Fi",
+        "Wi-Fi": "🌐 Wi-Fi",
+        "Parking": "🚗 주차장",
+        "Restaurant": "🍽️ 레스토랑",
+        "Bar": "🍷 바/라운지",
+        "Breakfast Included": "🍳 조식 포함",
+        "Air Conditioning": "❄️ 에어컨",
+        "Fitness Center": "💪 피트니스 센터",
+        "Spa": "💆 스파",
+        "Swimming Pool": "🏊 수영장",
+        "Laundry Service": "🧺 세탁 서비스",
+        "Shuttle Service": "🚌 셔틀 서비스",
+        "24-hour Front Desk": "🕛 24시간 프런트",
+        "Room Service": "🛎️ 룸서비스",
+        "Conference Room": "💼 회의실",
+        "Family Rooms": "👨‍👩‍👧‍👦 가족 객실",
+        "Wheelchair Accessible": "♿ 장애인 편의시설",
+        "Car Rental": "🚙 렌터카 서비스",
+        "Pet Friendly": "🐾 반려동물 동반 가능",
+        "Non-smoking Rooms": "🚭 금연 객실",
+    }
+
+    for h in hotels:
+        name = h.get("name") or "(이름 없음)"
+        address = h.get("address") or "주소 정보 없음"
+        price = h.get("price")
+        currency = h.get("currency") or ""
+        rating = h.get("rating") or h.get("stars")
+        distance = h.get("distance")
+
+        # 🏨 호텔 기본 정보
+        st.markdown(f"### 🏨 {name}")
+        if price is not None:
+            st.markdown(f"- 💵 가격: {price} {currency}")
+        else:
+            if h.get("price_level"):
+                st.markdown(f"- 💵 예상 가격대: {h['price_level']}")
+        if rating is not None:
+            st.markdown(f"- ⭐ 평점: {rating}")
+        if distance is not None:
+            st.markdown(f"- 🛫 공항과의 거리: {distance} km")
+        st.markdown(f"- 📍 주소: {address}")
+
+        # 🛎️ 편의시설
+        if h.get("amenities"):
+            amenities = h["amenities"][:8]  # 상위 8개까지만 표시
+            translated = [
+                amenity_map.get(a, f"• {a}") for a in amenities
+            ]
+            st.markdown("🛎️ **편의시설:** " + ", ".join(translated))
+
+        # 🖼️ 이미지
+        if h.get("image"):
+            st.image(h["image"], use_container_width=True)
+
+        st.markdown("---")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# UI 입력
+# ──────────────────────────────────────────────────────────────────────────────
 departure_input = st.text_input("출발지 (도시명)", "서울")
 departure_date = st.date_input("출발 날짜", datetime.today())
 travel_days = st.number_input("여행 기간 (일)", min_value=1, max_value=30, value=5)
 preference = st.text_area("여행지에 바라는 점", "눈이 오는 곳으로 가고 싶어요")
 
+# ──────────────────────────────────────────────────────────────────────────────
+# 실행
+# ──────────────────────────────────────────────────────────────────────────────
 if st.button("✈️ 추천하기"):
     st.info("여행지를 추천받고 있어요...")
 
@@ -104,7 +173,7 @@ if st.button("✈️ 추천하기"):
             city_en = dest["city_en"]
             country_en = dest["country_en"]
 
-            # ✅ 날씨
+            # 날씨
             weather = get_weather_forecast(city_en, country_en, departure_date, travel_days)
             if weather:
                 st.markdown("🌦️ **날씨 예보:**")
@@ -112,70 +181,48 @@ if st.button("✈️ 추천하기"):
             else:
                 st.write("🌦️ 날씨 정보를 불러올 수 없습니다.")
 
-            # ✅ IATA, 좌표
+            # IATA, 좌표
             departure_iata = location_to_iata(departure_input, country_en)
             arrival_iata = dest.get("iata_code") or location_to_iata(city_en, country_en)
             lat, lon = get_lat_lon_from_iata(arrival_iata) if arrival_iata else (None, None)
 
-            checkin = str(departure_date)
-            checkout = str(departure_date + timedelta(days=travel_days))
+            # 공항명(영문) 가져오기
+            airport_name_en = get_airport_name_from_iata(arrival_iata) or iata_to_name.get(arrival_iata, arrival_iata)
 
-            # ✅ 호텔: Amadeus + Hotelbeds 하이브리드
-            amadeus_list, hotelbeds_list = [], []
+            # DeepL로 한국어 번역 (DeepL API 키는 이미 등록돼 있음)
+            try:
+                airport_name_en = get_airport_name_from_iata(arrival_iata) or iata_to_name.get(arrival_iata,
+                                                                                               arrival_iata)
+                # 먼저 get_airport_koname() 시도, 실패하면 DeepL 호출
+                airport_name_kr = get_airport_koname(arrival_iata) or translate_with_deepl(airport_name_en,
+                                                                                           target_lang="KO",
+                                                                                           source_lang="EN")
+            except Exception:
+                airport_name_kr = airport_name_en  # 실패 시 영문 그대로 표시
+
+            # 출력
+            airport_name_en = get_airport_name_from_iata(arrival_iata) or iata_to_name.get(arrival_iata, arrival_iata)
+            airport_name_kr = get_airport_koname(arrival_iata) or translate_with_deepl(airport_name_en,target_lang="KO", source_lang="EN")
+            st.markdown(f"✈️ **추천 공항: {airport_name_kr} ({arrival_iata})**")
+
+            # 호텔 (LiteAPI)
+            hotel_info = []
             try:
                 if lat and lon:
-                    amadeus_list = get_hotels_amadeus(
-                        checkin=checkin,
-                        checkout=checkout,
-                        adults=2,
-                        limit=3,
-                        lat_lon=(lat, lon),
-                        city_code=arrival_iata
-                    )
-                    if not amadeus_list:
-                        hotelbeds_list = get_hotels_hotelbeds(
-                            checkin=checkin,
-                            checkout=checkout,
-                            adults=2,
-                            limit=3,
-                            lat_lon=(lat, lon),
-                            radius_km=25
-                        )
-                else:
-                    amadeus_list = get_hotels_amadeus(
-                        city_code=arrival_iata,
-                        checkin=checkin,
-                        checkout=checkout,
-                        adults=2,
-                        limit=3
-                    )
-
-                hotel_info = _merge_hotels(amadeus_list, hotelbeds_list, limit=3)
+                    hotel_info = search_hotels(lat=lat, lon=lon, radius_km=15, limit=3)  # 라이브러리 호출
+                elif arrival_iata:
+                    hotel_info = search_hotels(iata_code=arrival_iata, limit=3)
             except Exception as e:
                 st.warning("호텔 API 호출 중 오류가 발생했습니다.")
                 print("호텔 API 에러:", e)
-                hotel_info = []
 
-            # ✅ 호텔 출력
-            if not hotel_info:
-                st.write("❌ 호텔 정보를 찾을 수 없습니다.")
-            else:
-                st.write("🏨 **추천 호텔:**")
-                for h in hotel_info:
-                    name_en = h.get("name", "Unknown")
-                    price = h.get("price")
-                    currency = h.get("currency", "KRW")
-                    stars = h.get("stars", "N/A")
-                    address = h.get("address", "주소 정보 없음")
+            if hotel_info and lat and lon:
+                hotel_info = enrich_with_locationiq(hotel_info, center_lat=lat, center_lon=lon)
+                hotel_info = enrich_price_level(hotel_info, center_lat=lat, center_lon=lon)  # ← 추가된 1줄
 
-                    st.markdown(f"**🏨 {name_en}**")
-                    st.markdown(f"- ⭐ 성급: {stars}")
-                    if price:
-                        st.markdown(f"- 💵 가격: {price} {currency}")
-                    st.markdown(f"- 📍 주소: {address}")
-                    st.markdown("---")
+            render_hotels(hotel_info)
 
-            # ✅ 시차 + 항공편
+            # 시차 + 항공편
             if departure_iata and arrival_iata:
                 diff = calculate_time_difference_by_iata(departure_iata, arrival_iata, timezone_mapping)
                 if isinstance(diff, int):
